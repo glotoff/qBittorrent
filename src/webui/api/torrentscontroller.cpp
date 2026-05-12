@@ -33,12 +33,15 @@
 #include <concepts>
 
 #include <QBitArray>
+#include <QDir>
 #include <QFileInfo>
 #include <QFuture>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
+#include <QProcess>
 #include <QRegularExpression>
+#include <QTemporaryFile>
 #include <QUrl>
 
 #include "base/addtorrentmanager.h"
@@ -2123,6 +2126,147 @@ void TorrentsController::exportAction()
         throw APIError(APIErrorType::Conflict, tr("Unable to export torrent file. Error: %1").arg(result.error()));
 
     setResult(result.value(), u"application/x-bittorrent"_s, (id.toString() + u".torrent"));
+}
+
+void TorrentsController::downloadContentAction()
+{
+    requireParams({u"hash"_s});
+
+    const auto id = BitTorrent::TorrentID::fromString(params()[u"hash"_s]);
+    const BitTorrent::Torrent *const torrent = BitTorrent::Session::instance()->getTorrent(id);
+    if (!torrent)
+        throw APIError(APIErrorType::NotFound);
+
+    qDebug() << "downloadContentAction: Torrent found:" << torrent->name();
+    LogMsg(u"downloadContentAction: Torrent found: %1"_s.arg(torrent->name()), Log::INFO);
+
+    const Path contentPath = torrent->contentPath();
+    const Path savePath = (!contentPath.isEmpty() ? contentPath : torrent->savePath());
+
+    qDebug() << "downloadContentAction: Content path:" << contentPath.toString() << "Save path:" << savePath.toString();
+    LogMsg(u"downloadContentAction: Content path: %1, Save path: %2"_s.arg(contentPath.toString(), savePath.toString()), Log::INFO);
+
+    if (!savePath.exists())
+        throw APIError(APIErrorType::Conflict, tr("Torrent content path does not exist: %1").arg(savePath.toString()));
+
+    // Check if it's a single file or a directory
+    QFileInfo savePathInfo(savePath.data());
+
+    if (savePathInfo.isFile()) {
+        qDebug() << "downloadContentAction: Single file detected";
+        LogMsg(u"downloadContentAction: Single file detected"_s, Log::INFO);
+
+        // Single file - just return it directly
+        QFile file(savePath.data());
+        if (!file.open(QIODevice::ReadOnly))
+            throw APIError(APIErrorType::Conflict, tr("Unable to read file: %1").arg(savePath.toString()));
+
+        const QByteArray fileData = file.readAll();
+        file.close();
+
+        qDebug() << "downloadContentAction: Read" << fileData.size() << "bytes from file";
+        LogMsg(u"downloadContentAction: Read %1 bytes from file"_s.arg(fileData.size()), Log::INFO);
+
+        if (fileData.isEmpty())
+            throw APIError(APIErrorType::Conflict, tr("File is empty: %1").arg(savePath.toString()));
+
+        setResult(fileData);
+        qDebug() << "downloadContentAction: Single file download complete";
+        LogMsg(u"downloadContentAction: Single file download complete"_s, Log::INFO);
+        return;
+    }
+
+    qDebug() << "downloadContentAction: Directory detected, creating zip archive";
+    LogMsg(u"downloadContentAction: Directory detected, creating zip archive"_s, Log::INFO);
+
+    // Directory - need to archive it using zip
+    QTemporaryFile tempFile;
+    if (!tempFile.open())
+        throw APIError(APIErrorType::Conflict, tr("Unable to create temporary file."));
+
+    const QString zipPath = tempFile.fileName();
+    tempFile.close();
+
+    // Remove the empty temporary file so zip can create it fresh
+    QFile::remove(zipPath);
+
+    qDebug() << "downloadContentAction: Temporary file created and removed:" << zipPath;
+    LogMsg(u"downloadContentAction: Temporary file path: %1"_s.arg(zipPath), Log::INFO);
+
+    // Use system zip command - change to parent directory to avoid full path in archive
+    QProcess zipProcess;
+    QStringList zipArgs;
+    zipArgs << u"-r"_s << u"-q"_s << zipPath << savePath.filename();
+
+    const QString originalDir = QDir::currentPath();
+    QDir::setCurrent(savePath.parentPath().data());
+
+    qDebug() << "downloadContentAction: Changed to directory:" << savePath.parentPath().toString();
+    qDebug() << "downloadContentAction: Zipping directory:" << savePath.filename();
+    LogMsg(u"downloadContentAction: Changed to directory: %1, zipping: %2"_s.arg(savePath.parentPath().toString(), savePath.filename()), Log::INFO);
+
+    zipProcess.start(u"zip"_s, zipArgs);
+
+    qDebug() << "downloadContentAction: Starting zip process with command: zip -r -q" << zipPath << savePath.filename();
+    LogMsg(u"downloadContentAction: Starting zip process with command: zip -r -q %1 %2"_s.arg(zipPath, savePath.filename()), Log::INFO);
+
+    if (!zipProcess.waitForStarted(10000)) {
+        qDebug() << "downloadContentAction: Failed to start zip process";
+        LogMsg(u"downloadContentAction: Failed to start zip process"_s, Log::WARNING);
+        QDir::setCurrent(originalDir);
+        throw APIError(APIErrorType::Conflict, tr("Unable to start zip process. Please ensure zip is installed and added to your system PATH."));
+    }
+
+    qDebug() << "downloadContentAction: Zip process started";
+    LogMsg(u"downloadContentAction: Zip process started"_s, Log::INFO);
+
+    if (!zipProcess.waitForFinished(300000)) {
+        qDebug() << "downloadContentAction: Zip process timed out";
+        LogMsg(u"downloadContentAction: Zip process timed out"_s, Log::WARNING);
+        QDir::setCurrent(originalDir);
+        throw APIError(APIErrorType::Conflict, tr("Zip process timed out."));
+    }
+
+    qDebug() << "downloadContentAction: Zip process finished with exit code:" << zipProcess.exitCode();
+    LogMsg(u"downloadContentAction: Zip process finished with exit code: %1"_s.arg(zipProcess.exitCode()), Log::INFO);
+
+    if (zipProcess.exitCode() != 0) {
+        const QString error = QString::fromUtf8(zipProcess.readAllStandardError());
+        const QString output = QString::fromUtf8(zipProcess.readAllStandardOutput());
+        qDebug() << "downloadContentAction: Zip failed. Error:" << error << "Output:" << output;
+        LogMsg(u"downloadContentAction: Zip failed. Error: %1, Output: %2"_s.arg(error, output), Log::WARNING);
+        QDir::setCurrent(originalDir);
+        throw APIError(APIErrorType::Conflict, tr("Failed to create zip archive. Error: %1").arg(error));
+    }
+
+    // Restore original directory
+    QDir::setCurrent(originalDir);
+    qDebug() << "downloadContentAction: Restored original directory:" << originalDir;
+    LogMsg(u"downloadContentAction: Restored original directory: %1"_s.arg(originalDir), Log::INFO);
+
+    // Read the zip file
+    QFile zipFile(zipPath);
+    if (!zipFile.open(QIODevice::ReadOnly)) {
+        qDebug() << "downloadContentAction: Failed to open zip file for reading";
+        LogMsg(u"downloadContentAction: Failed to open zip file for reading"_s, Log::WARNING);
+        throw APIError(APIErrorType::Conflict, tr("Unable to read zip file."));
+    }
+
+    const QByteArray zipData = zipFile.readAll();
+    zipFile.close();
+
+    qDebug() << "downloadContentAction: Read" << zipData.size() << "bytes from zip file";
+    LogMsg(u"downloadContentAction: Read %1 bytes from zip file"_s.arg(zipData.size()), Log::INFO);
+
+    if (zipData.isEmpty()) {
+        qDebug() << "downloadContentAction: Zip file is empty";
+        LogMsg(u"downloadContentAction: Zip file is empty"_s, Log::WARNING);
+        throw APIError(APIErrorType::Conflict, tr("Failed to read zip file data."));
+    }
+
+    setResult(zipData);
+    qDebug() << "downloadContentAction: Download complete";
+    LogMsg(u"downloadContentAction: Download complete"_s, Log::INFO);
 }
 
 void TorrentsController::SSLParametersAction()

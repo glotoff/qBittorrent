@@ -6,6 +6,11 @@ set -e
 echo "--- Updating Package Lists ---"
 sudo apt update
 
+sudo apt install ccache
+
+#runtime / docker
+sudo apt install zip
+
 echo "--- Installing Core Build Tools ---"
 sudo apt install -y build-essential cmake ninja-build pkg-config
 
@@ -33,20 +38,23 @@ sudo apt install -y \
 
 echo "--- Cleaning Old Build Artifacts ---"
 if [ -d "build" ]; then
-    rm -rf build
+    sudo rm -rf build
+	mkdir build
 fi
 
 echo "--- Configuring with ARM64-Specific Paths ---"
 # We use explicit paths to bypass the search issues encountered with CMake 4.2
 sudo cmake -G "Ninja" -B build \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX=/usr/local \
   -DZLIB_LIBRARY=/usr/lib/aarch64-linux-gnu/libz.so \
   -DZLIB_INCLUDE_DIR=/usr/include \
   -DCMAKE_PREFIX_PATH=/usr/lib/aarch64-linux-gnu/cmake/Qt6 \
-  -DCMAKE_POLICY_DEFAULT_CMP0167=OLD
+  -DCMAKE_POLICY_DEFAULT_CMP0167=OLD\
+  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+  -DCMAKE_C_COMPILER_LAUNCHER=ccache \  
 
 echo "--- Build Configuration Complete ---"
 echo "You can now run: cmake --build build -j\$(nproc)"
 
-cmake --build build -j$(nproc)
+sudo cmake --build build -j$(nproc)
