@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  qbittorrent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: qbittorrent
+    restart: unless-stopped
+    ports:
+      - "8080:8080"  # WebUI port
+      - "6881:6881"  # BitTorrent port
+      - "6881:6881/udp"  # BitTorrent UDP port
+    volumes:
+      - ./config:/home/qbittorrent/.local/share/qBittorrent  # Configuration
+      - ./downloads:/home/qbittorrent/downloads  # Downloads
+    environment:
+      - QBT_WEBUI_PORT=8080
+      - QBT_DOWNLOADS_PATH=/home/qbittorrent/downloads
+    networks:
+      - qbittorrent-net
+
+networks:
+  qbittorrent-net:
+    driver: bridge
