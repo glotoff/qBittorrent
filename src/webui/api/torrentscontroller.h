@@ -113,6 +113,7 @@ private slots:
     void renameFileAction();
     void renameFolderAction();
     void exportAction();
+    void downloadContentAction();
     void SSLParametersAction();
     void setSSLParametersAction();
     void fetchMetadataAction();

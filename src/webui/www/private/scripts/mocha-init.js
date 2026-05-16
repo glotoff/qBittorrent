@@ -156,6 +156,7 @@ let copyCommentFN = () => {};
 let copyContentPathFN = () => {};
 let setQueuePositionFN = () => {};
 let exportTorrentFN = () => {};
+let downloadContentFN = () => {};
 
 const initializeWindows = () => {
     const localPreferences = new window.qBittorrent.LocalPreferences.LocalPreferences();
@@ -1249,6 +1250,30 @@ const initializeWindows = () => {
 
             // download response to file
             await window.qBittorrent.Misc.downloadFile(url, `${name}.torrent`, "QBT_TR(Unable to export torrent file)QBT_TR[CONTEXT=MainWindow]");
+
+            // https://stackoverflow.com/questions/53560991/automatic-file-downloads-limited-to-10-files-on-chrome-browser
+            await window.qBittorrent.Misc.sleep(200);
+        }
+    };
+
+    downloadContentFN = async () => {
+        const hashes = torrentsTable.selectedRowsIds();
+        for (const hash of hashes) {
+            const row = torrentsTable.rows.get(hash);
+            if (!row)
+                continue;
+
+            const name = row.full_data.name;
+            const url = new URI("api/v2/torrents/downloadContent");
+            url.setData("hash", hash);
+
+            // download response to file with .zip extension
+            const element = document.createElement("a");
+            element.setAttribute("href", url);
+            element.setAttribute("download", (name + ".zip"));
+            document.body.appendChild(element);
+            element.click();
+            document.body.removeChild(element);
 
             // https://stackoverflow.com/questions/53560991/automatic-file-downloads-limited-to-10-files-on-chrome-browser
             await window.qBittorrent.Misc.sleep(200);
